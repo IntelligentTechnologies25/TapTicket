@@ -1,67 +1,45 @@
-import { db, type LocalProfile } from './db';
+import { db } from './db';
 
 export interface DeviceIdentity {
-  id: string;
-  code: string;
-  profileId: string;
-  companyId: string;
-  publicKey: string;
-  privateKey: CryptoKey;
+  id: string; code: string; profileId: string; companyId: string; publicKey: string; privateKey: CryptoKey;
 }
-
 const encoder = new TextEncoder();
-function base64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
+function toBase64(bytes: Uint8Array): string {
+  let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary);
 }
-
-export async function getOrCreateDeviceIdentity(profile: LocalProfile): Promise<DeviceIdentity> {
-  const stored = await db.settings.get('device-identity');
-  if (stored?.value && typeof stored.value === 'object') {
-    const value = stored.value as DeviceIdentity;
-    if (value.profileId === profile.id && value.companyId === profile.companyId && value.privateKey && value.publicKey && value.id) return value;
-    throw new Error('This device is enrolled to another account. Sign out and use a separate browser profile/device.');
-  }
-
-  const pair = await crypto.subtle.generateKey({ name: 'Ed25519' } as Algorithm, false, ['sign', 'verify']) as CryptoKeyPair;
-  const publicBytes = new Uint8Array(await crypto.subtle.exportKey('spki', pair.publicKey));
-  const code = crypto.randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase();
-  const identity: DeviceIdentity = {
-    id: crypto.randomUUID(), code, profileId: profile.id, companyId: profile.companyId,
-    publicKey: base64(publicBytes), privateKey: pair.privateKey
+export function canonicalJson(value: unknown): string {
+  const normalize = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(normalize);
+    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a],[b]) => a.localeCompare(b)).map(([key, child]) => [key, normalize(child)]));
+    return item;
   };
-  // CryptoKey is stored as a structured-cloneable, non-exportable key in IndexedDB. No raw private bytes enter JS storage.
+  return JSON.stringify(normalize(value));
+}
+export async function getOrCreateDeviceIdentity(profile: { id: string; companyId: string }): Promise<DeviceIdentity> {
+  const record = await db.settings.get('device-identity');
+  if (record?.value && typeof record.value === 'object') {
+    const stored = record.value as DeviceIdentity;
+    if (stored.profileId !== profile.id || stored.companyId !== profile.companyId) throw new Error('This browser device is enrolled to another account.');
+    if (!stored.privateKey || stored.privateKey.extractable || !stored.publicKey || !stored.id) throw new Error('Stored device key is invalid; re-enroll this device.');
+    return stored;
+  }
+  if (!crypto.subtle || !globalThis.isSecureContext) throw new Error('Device signing requires a supported browser in a secure context (HTTPS).');
+  let pair: CryptoKeyPair;
+  try { pair = await crypto.subtle.generateKey({ name: 'Ed25519' } as Algorithm, false, ['sign','verify']) as CryptoKeyPair; }
+  catch { throw new Error('This browser does not support Ed25519 WebCrypto; use a supported secure browser.'); }
+  const publicKey = toBase64(new Uint8Array(await crypto.subtle.exportKey('spki', pair.publicKey)));
+  const identity: DeviceIdentity = { id: crypto.randomUUID(), code: crypto.randomUUID().replaceAll('-','').slice(0,8).toUpperCase(), profileId: profile.id, companyId: profile.companyId, publicKey, privateKey: pair.privateKey };
   await db.settings.put({ key: 'device-identity', value: identity });
   return identity;
 }
-
 export async function signDevicePayload(identity: DeviceIdentity, payload: Record<string, unknown>): Promise<string> {
-  const bytes = encoder.encode(canonicalJson(payload));
-  const signature = await crypto.subtle.sign({ name: 'Ed25519' } as Algorithm, identity.privateKey, bytes);
-  return base64(new Uint8Array(signature));
+  const signature = await crypto.subtle.sign({ name: 'Ed25519' } as Algorithm, identity.privateKey, encoder.encode(canonicalJson(payload)));
+  return toBase64(new Uint8Array(signature));
 }
-
-export function canonicalJson(value: Record<string, unknown>): string {
-  const sort = (item: unknown): unknown => {
-    if (Array.isArray(item)) return item.map(sort);
-    if (item && typeof item === 'object') {
-      return Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, sort(child)]));
-    }
-    return item;
-  };
-  return JSON.stringify(sort(value));
-}
-
 export async function verifyDevicePayload(payload: Record<string, unknown>, signatureBase64: string, publicKeyBase64: string): Promise<boolean> {
   try {
-    const binary = atob(publicKeyBase64);
-    const publicBytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    const signatureBinary = atob(signatureBase64);
-    const signature = Uint8Array.from(signatureBinary, (char) => char.charCodeAt(0));
-    const publicKey = await crypto.subtle.importKey('spki', publicBytes, { name: 'Ed25519' } as Algorithm, true, ['verify']);
+    const publicKey = await crypto.subtle.importKey('spki', Uint8Array.from(atob(publicKeyBase64), c => c.charCodeAt(0)), { name: 'Ed25519' } as Algorithm, false, ['verify']);
+    const signature = Uint8Array.from(atob(signatureBase64), c => c.charCodeAt(0));
     return crypto.subtle.verify({ name: 'Ed25519' } as Algorithm, publicKey, signature, encoder.encode(canonicalJson(payload)));
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
