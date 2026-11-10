@@ -1,0 +1,8 @@
+import { onMount } from 'svelte';
+  import { db, type LocalProfile } from './lib/db';
+  import { configureDevicePin, getCachedProfile, signIn, signOut, verifyDevicePin } from './lib/auth';
+  import { supabase, supabaseEnabled } from './lib/supabase';
+  import ConductorSales from './features/conductor/ConductorSales.svelte';
+  import CheckerPanel from './features/checker/CheckerPanel.svelte';
+  import AdminPanel from './features/admin/AdminPanel.svelte';
+  import { startSync } from './lib/sync';
