@@ -40,6 +40,20 @@ export interface LocalSetting {
   value: unknown;
 }
 
+export interface RouteStop {
+  id: string;
+  name: string;
+  sequence: number;
+}
+
+export interface FareRoute {
+  id: string;
+  name: string;
+  stops: RouteStop[];
+  faresCents: Record<string, { adult: number; child: number }>;
+  sampleOnly?: boolean;
+}
+
 export interface TripRecord {
   id: string;
   companyId: string;
@@ -48,6 +62,7 @@ export interface TripRecord {
   tripNumber: string;
   busRegistration: string;
   driverName: string;
+  conductorId: string;
   conductorName: string;
   conductorMobile: string;
   startedAt: number;
@@ -103,6 +118,14 @@ class TapTicketDatabase extends Dexie {
       trips: '&id, companyId, routeId, tripNumber, status, startedAt',
       tickets: '&id, tripId, ticketNumber, createdAt, companyId'
     });
+    this.version(3).stores({
+      profiles: '&id, companyId, role, active',
+      outbox: '&id, entity, state, createdAt',
+      references: '&key, companyId, version, downloadedAt',
+      settings: '&key',
+      trips: '&id, companyId, routeId, tripNumber, status, startedAt',
+      tickets: '&id, tripId, ticketNumber, createdAt, companyId'
+    });
   }
 }
 
@@ -114,13 +137,8 @@ export async function enqueueLocalEvent(
   action: OutboxItem['action'] = 'event'
 ): Promise<OutboxItem> {
   const item: OutboxItem = {
-    id: crypto.randomUUID(),
-    entity,
-    action,
-    payload,
-    createdAt: Date.now(),
-    state: 'queued',
-    attempts: 0
+    id: crypto.randomUUID(), entity, action, payload,
+    createdAt: Date.now(), state: 'queued', attempts: 0
   };
   await db.outbox.add(item);
   return item;
