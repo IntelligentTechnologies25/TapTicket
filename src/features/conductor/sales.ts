@@ -21,13 +21,18 @@ const sampleCompanyRoute = (companyId: string): FareRoute => ({
 
 export async function loadConductorRoute(companyId: string): Promise<FareRoute | undefined> {
   const key = `conductor-route:${companyId}`;
-  let snapshot = await db.references.get(key);
-  if (!snapshot && import.meta.env.DEV) {
+  const snapshot = await db.references.get(key);
+  if (snapshot && typeof snapshot.value === 'object') {
+    return snapshot.value as FareRoute;
+  }
+
+  if (import.meta.env.DEV) {
     const route = sampleCompanyRoute(companyId);
     await db.references.put({ key, companyId, version: 1, value: route, downloadedAt: Date.now() });
-    snapshot = await db.references.get(key);
+    return route;
   }
-  return snapshot?.value as FareRoute | undefined;
+
+  return undefined;
 }
 
 function localDateCode(date = new Date()): string {
@@ -76,10 +81,18 @@ export async function startLocalTrip(input: {
     const now = Date.now();
     const tripSequence = await incrementSetting(`trip-sequence:${input.companyId}:${localDateCode()}`);
     const trip: TripRecord = {
-      id: crypto.randomUUID(), companyId: input.companyId, routeId: input.route.id,
-      routeName: input.route.name, tripNumber: `TRIP-${localDateCode()}-${String(tripSequence).padStart(4, '0')}`,
-      busRegistration: registration, driverName: driver, conductorId: input.conductorId,
-      conductorName: input.conductorName, conductorMobile: mobile, startedAt: now, status: 'active'
+      id: crypto.randomUUID(),
+      companyId: input.companyId,
+      routeId: input.route.id,
+      routeName: input.route.name,
+      tripNumber: `TRIP-${localDateCode()}-${String(tripSequence).padStart(4, '0')}`,
+      busRegistration: registration,
+      driverName: driver,
+      conductorId: input.conductorId,
+      conductorName: input.conductorName,
+      conductorMobile: mobile,
+      startedAt: now,
+      status: 'active'
     };
     await db.trips.add(trip);
     await db.outbox.add(outboxRow(`trip:${trip.id}`, 'trip', trip, now));
@@ -99,7 +112,8 @@ export async function endLocalTrip(trip: TripRecord): Promise<void> {
 export function calculateFare(route: FareRoute, fromId: string, toId: string, type: FareType, luggageCents = 0): number {
   if (fromId === toId) return 0;
   if (type === 'luggage') return luggageCents;
-  const fare = route.faresCents[`${fromId}|${toId}`];
+  const key = `${fromId}|${toId}`;
+  const fare = route.faresCents[key];
   return fare ? fare[type] : 0;
 }
 
@@ -126,18 +140,30 @@ export async function issueLocalTicket(input: {
     const deviceId = await getDeviceCode();
     const sequence = await incrementSetting(`ticket-sequence:${deviceId}`);
     const ticket: TicketRecord = {
-      id: crypto.randomUUID(), tripId: input.trip.id, companyId: input.trip.companyId,
+      id: crypto.randomUUID(),
+      tripId: input.trip.id,
+      companyId: input.trip.companyId,
       ticketNumber: `${deviceId}-${localDateCode()}-${String(sequence).padStart(6, '0')}`,
-      deviceId, sequenceNumber: sequence, fromStopId: input.from.id, fromStopName: input.from.name,
-      toStopId: input.to.id, toStopName: input.to.name, fareType: input.fareType,
-      amountCents: input.amountCents, paymentMethod: input.paymentMethod,
+      deviceId,
+      sequenceNumber: sequence,
+      fromStopId: input.from.id,
+      fromStopName: input.from.name,
+      toStopId: input.to.id,
+      toStopName: input.to.name,
+      fareType: input.fareType,
+      amountCents: input.amountCents,
+      paymentMethod: input.paymentMethod,
       cashTenderedCents: input.paymentMethod === 'cash' ? input.cashTenderedCents : null,
       changeCents: input.paymentMethod === 'cash' ? input.cashTenderedCents - input.amountCents : 0,
       ecocashReference: input.paymentMethod === 'ecocash' ? reference : null,
-      tripNumber: input.trip.tripNumber, busRegistration: input.trip.busRegistration,
-      conductorName: input.trip.conductorName, conductorMobile: input.trip.conductorMobile,
-      driverName: input.trip.driverName, createdAt: now
+      tripNumber: input.trip.tripNumber,
+      busRegistration: input.trip.busRegistration,
+      conductorName: input.trip.conductorName,
+      conductorMobile: input.trip.conductorMobile,
+      driverName: input.trip.driverName,
+      createdAt: now
     };
+
     await db.tickets.add(ticket);
     await db.outbox.add(outboxRow(`ticket:${ticket.id}`, 'ticket', ticket, now));
     return ticket;
